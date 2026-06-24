@@ -1,0 +1,6 @@
+# Cache, IDE things
+**/__pycache__
+**/.vscode
+
+# ignore /lib, matpower source can be stored here for convenience
+lib
