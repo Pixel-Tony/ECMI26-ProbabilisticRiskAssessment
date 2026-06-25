@@ -1,4 +1,4 @@
-function results = calc_mls(mpc, contab, contab_cases, allowed_generation_variation, verbose, mpopt, mpopt_socp)
+function results = calc_mls(mpc, contab, contab_cases, allowed_generation_variation, verbose, mpopt, mpopt_socp, on_weighting)
 %% N-1 Contingency Analysis with Isolated Node Isolation & SOCP-OPF
 % use [] for contab_cases to use all cases, otherwise it should be a mask to choose specific cases
 
@@ -24,10 +24,12 @@ mpc.gencost(:, 4) = 2;      % two coefficients: c1, c0
 mpc.gencost(:, 5:6) = 0;    % zero linear and constant coefficients
 
 %%
-if isequal(contab_cases, [])
-    contab_cases = logical(ones(height(contab), 1));
-end;
-labels = unique(contab(contab_cases, CT_LABEL));
+%if isequal(contab_cases, [])
+%    contab_cases = logical(ones(height(contab), 1));
+%end;
+%labels = unique(contab(contab_cases, CT_LABEL));
+
+labels = unique(contab(:, CT_LABEL));
 VOLL = 1; %1e5;
 
 %% Summary for each contab case
@@ -41,6 +43,15 @@ STATUS_ISOLATED_OPTIMIZED = 1;  % Unfeasible cases with isolated points that wer
 STATUS_NORMAL_OPTIMIZED = 2;    % Unfeasible cases (no isolated points) successfully optimized
 STATUS_OPTIMIZED_FAILED = 3;    % Cases where optimization completely failed
 
+%%
+if on_weighting
+    weights = makedist('Multinomial','Probabilities',[9/16 1/4 1/8 1/16]);
+    rng(0);
+    w = random(weights, length(mpc.bus(:,1)) - length(mpc.gen(:,1)));
+else
+    w = ones(length(mpc.bus(:,1)) - length(mpc.gen(:,1)));
+end
+%%
 for k = 1:numel(labels)
     fprintf_verb('\n--- Evaluating Contingency %d / %d ---\n', k, numel(labels));
 
@@ -103,7 +114,7 @@ for k = 1:numel(labels)
     % Set linear penalty cost for shedding viable load
     mpc_socp.gencost(disp_load_idx, MODEL) = POLYNOMIAL;
     mpc_socp.gencost(disp_load_idx, NCOST) = 2;
-    mpc_socp.gencost(disp_load_idx, COST)   = VOLL;
+    mpc_socp.gencost(disp_load_idx, COST) = VOLL * w(disp_load_idx);
     mpc_socp.gencost(disp_load_idx, COST + 1) = 0;
     P_nominal = abs(mpc_socp.gen(disp_load_idx, PMIN));
 
@@ -113,7 +124,7 @@ for k = 1:numel(labels)
         P_optimized = abs(results_socp.gen(disp_load_idx, PG));
         results(k, 3) = sum(P_nominal - P_optimized);
         if has_isolated_bus
-            results(k, 3) += forced_cut;
+            results(k, 3) = results(k, 3) + forced_cut;
         end
     else
         fprintf_verb(['  [SOCP-OPF]   : First attempt failed. ' ...
@@ -179,8 +190,8 @@ for k = 1:numel(labels)
         disp_load_idx = disp_load_idx_retry;
     end
 
-    P_nominal_disp = mpc_socp.gen(disp_load_idx, PMIN);
-    P_optimized_disp = results_socp.gen(disp_load_idx, PG);
+    P_nominal_disp = abs(mpc_socp.gen(disp_load_idx, PG));
+    P_optimized_disp = abs(results_socp.gen(disp_load_idx, PG));
     load_shed_vector = P_nominal_disp - P_optimized_disp;
 
     load_shed_vector(load_shed_vector < 1e-3) = 0;
