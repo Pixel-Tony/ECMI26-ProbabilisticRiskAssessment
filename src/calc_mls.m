@@ -1,4 +1,4 @@
-function results = calc_mls(mpc, contab, contab_cases, allowance, verbose, mpopt, mpopt_socp)
+function results = calc_mls(mpc, contab, contab_cases, allowed_generation_variation, verbose, mpopt, mpopt_socp)
 %% N-1 Contingency Analysis with Isolated Node Isolation & SOCP-OPF
 % use [] for contab_cases to use all cases, otherwise it should be a mask to choose specific cases
 
@@ -10,23 +10,28 @@ else
     fprintf_verb = @(varargin) 0;
 end
 
-Pmidpoint = mpc.gen(:, PG);
-mpc.gen(:, PMAX) = Pmidpoint * (1 + allowance); % TODO rename allowance?
-mpc.gen(:, PMIN) = Pmidpoint / (1 + allowance);
+P_ref = mpc.gen(:, PG);         % Generator dispatch from input data
+PMIN_ref = mpc.gen(:, PMIN);    % Original lower bounds
+PMAX_ref = mpc.gen(:, PMAX);    % Original upper bounds
 
-%Qmidpoint = mpc.gen(:, QMIN);
-%mpc.gen(:, QMAX) = Qmidpoint;
-%mpc.gen(:, QMIN) = Qmidpoint;
+Pmidpoint = mpc.gen(:, PG);
+mpc.gen(:, PMAX) = Pmidpoint * (1 + allowed_generation_variation);
+mpc.gen(:, PMIN) = Pmidpoint * (1 - allowed_generation_variation);
+
+mpc.gencost(:, 1) = 2;      % polynomial model
+mpc.gencost(:, 2:3) = 0;    % startup and shutdown costs
+mpc.gencost(:, 4) = 2;      % two coefficients: c1, c0
+mpc.gencost(:, 5:6) = 0;    % zero linear and constant coefficients
 
 %%
 if isequal(contab_cases, [])
     contab_cases = logical(ones(height(contab), 1));
 end;
 labels = unique(contab(contab_cases, CT_LABEL));
-VOLL = 1e5;
+VOLL = 1; %1e5;
 
 %% Summary for each contab case
-results = zeros(numel(labels), 2);
+results = zeros(numel(labels), 3);
 
 fprintf_verb('Starting real-time contingency screening with dynamic node isolation...\n');
 tic;
@@ -65,6 +70,10 @@ for k = 1:numel(labels)
     isolated_buses = setdiff(all_buses, connected_buses);
 
     has_isolated_bus = ~isempty(isolated_buses);
+    if has_isolated_bus
+        isolated_indices = mpc_k.bus(:, BUS_TYPE) == 4 | ismember(mpc_k.bus(:, BUS_I), isolated_buses);
+        forced_cut = sum(mpc_k.bus(isolated_indices, PD));
+    end
 
     % Clone the contingency case for modification
     mpc_mod = mpc_k;
@@ -96,14 +105,78 @@ for k = 1:numel(labels)
     mpc_socp.gencost(disp_load_idx, NCOST) = 2;
     mpc_socp.gencost(disp_load_idx, COST)   = VOLL;
     mpc_socp.gencost(disp_load_idx, COST + 1) = 0;
+    P_nominal = abs(mpc_socp.gen(disp_load_idx, PMIN));
 
     % Run the Convex Optimization
     results_socp = runopf(mpc_socp, mpopt_socp);
+    if results_socp.success
+        P_optimized = abs(results_socp.gen(disp_load_idx, PG));
+        results(k, 3) = sum(P_nominal - P_optimized);
+        if has_isolated_bus
+            results(k, 3) += forced_cut;
+        end
+    else
+        fprintf_verb(['  [SOCP-OPF]   : First attempt failed. ' ...
+                      'Retrying with original PMIN/PMAX and redispatch penalty...\n']);
 
-    if ~results_socp.success
-        fprintf_verb('  [SOCP-OPF]   : FAILED to resolve numerical boundaries even after isolation.\n');
-        results(k, 1) = STATUS_OPTIMIZED_FAILED;
-        continue
+        % Start from the cleaned contingency topology, before load2disp()
+        mpc_retry = mpc_mod;
+
+        % Restore original generator bounds.
+        % This assumes generator row order is unchanged by apply_changes().
+        n_original_gen = size(mpc_retry.gen, 1);
+        mpc_retry.gen(:, PMIN) = PMIN_ref(1:n_original_gen);
+        mpc_retry.gen(:, PMAX) = PMAX_ref(1:n_original_gen);
+
+        % Re-create dispatchable loads for the retry case
+        mpc_retry = load2disp(mpc_retry);
+        disp_load_idx_retry = find(isload(mpc_retry.gen));
+
+        % Preserve the high cost for load shedding
+        mpc_retry.gencost(disp_load_idx_retry, MODEL) = POLYNOMIAL;
+        mpc_retry.gencost(disp_load_idx_retry, NCOST) = 2;
+        mpc_retry.gencost(disp_load_idx_retry, COST) = VOLL;
+        mpc_retry.gencost(disp_load_idx_retry, COST + 1) = 0;
+
+        % The original generators are the rows present before load2disp().
+        % load2disp() appends dispatchable loads after these rows.
+        actual_gen_idx = 1:n_original_gen;
+
+        lambda = 10;  % tune this
+
+        for g = actual_gen_idx
+            Pg_ref = P_ref(g);
+
+            mpc_retry.gencost(g, MODEL) = POLYNOMIAL;
+            mpc_retry.gencost(g, NCOST) = 3;
+
+            mpc_retry.gencost(g, COST) = lambda;
+            mpc_retry.gencost(g, COST + 1) = -2 * lambda * Pg_ref;
+            mpc_retry.gencost(g, COST + 2) = lambda * Pg_ref^2;
+        end
+
+        % Second OPF attempt
+        results_socp = runopf(mpc_retry, mpopt_socp);
+
+        if ~results_socp.success
+            fprintf_verb(['  [SOCP-OPF]   : Retry failed even with restored ' ...
+                          'generator bounds.\n']);
+            results(k, 1) = STATUS_OPTIMIZED_FAILED;
+            continue;
+        end
+
+        % Use the retry model below when calculating load shedding
+        mpc_socp = mpc_retry;
+
+        fprintf_verb('  [SOCP-OPF]   : Retry succeeded with redispatch penalty.\n');
+
+        P_optimized = abs(results_socp.gen(disp_load_idx, PG));
+        if has_isolated_bus
+            results(k, 3) = sum(P_nominal - P_optimized) + forced_cut;
+        else
+            results(k, 3) = sum(P_nominal - P_optimized);
+        end
+        disp_load_idx = disp_load_idx_retry;
     end
 
     P_nominal_disp = mpc_socp.gen(disp_load_idx, PMIN);
@@ -115,8 +188,6 @@ for k = 1:numel(labels)
 
     % Account for the power automatically shed from isolating the floating node
     if has_isolated_bus
-        isolated_indices = mpc_k.bus(:, BUS_TYPE) == 4 | ismember(mpc_k.bus(:, BUS_I), isolated_buses);
-        forced_cut = sum(mpc_k.bus(isolated_indices, PD));
         total_cut = total_cut + forced_cut;
 
         fprintf_verb('  [SOCP-OPF]   : OPTIMIZED SUCCESSFULLY (Isolated nodes excluded)\n');
@@ -144,7 +215,7 @@ if verbose
                + "4. Failed Optimizations                 : %d\n" ...
                + "--------------------------------------------------\n" ...
                + "Total processing screening time         : %.3f seconds\n" ...
-               + "==================================================\n'", ...
+               + "==================================================\n", ...
                sum(results(:, 1) == STATUS_FEASIBLE), ...
                sum(results(:, 1) == STATUS_ISOLATED_OPTIMIZED), ...
                sum(results(:, 1) == STATUS_NORMAL_OPTIMIZED), ...

@@ -12,7 +12,7 @@ contab = contab_ACTIVSg200;
 mpopt = mpoption('verbose', 0, 'out.all', 0);
 mpopt_socp = mpoption(mpopt, 'model', 'AC', 'opf.ac.solver', 'MIPS');
 
-contab_cases_example = [1:7, 241:245];
-results = calc_mls(mpc_base, contab, contab_cases_example, 0.00, 1, mpopt, mpopt_socp);
+% contab_cases_example = [1:7, 241:245];
+results = calc_mls(mpc_base, contab, [], 0.00, 0, mpopt, mpopt_socp);
 
-results
+results(:, 3)
