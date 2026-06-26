@@ -1,5 +1,3 @@
-clc
-clear all;
 close all;
 
 % %% Define the base case
@@ -96,4 +94,4 @@ gen_bus_ids = unique(mpc.gen(:, GEN_BUS));
 highlight(p, gen_nodes, 'Marker', 'square', 'NodeColor', [1 0 0]);
 
 % Heatmap of expected yearly MLS by line
-exportgraphics(f, "Heatmap_E_MLS_by_line.pdf");
+exportgraphics(f, "Heatmap_E_MLS_Cost.pdf");
