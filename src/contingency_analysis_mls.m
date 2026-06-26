@@ -25,5 +25,3 @@ res_non_weighted = results(:, 3);
 
 res = [res_weighted, res_non_weighted];
 res
-
-
