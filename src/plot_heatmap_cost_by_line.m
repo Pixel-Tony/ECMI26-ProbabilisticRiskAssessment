@@ -38,7 +38,9 @@ mpc.bus(:, BUS_AREA) = mpc.bus(:, ZONE);% translate zones into areas
 % %% rescale MLS
 % yearly_mls_statistical = yearly_mls .* probabilities;
 % save("yearly_mls_statistical.mat", "yearly_mls_statistical");
-yearly_mls_statistical = load("yearly_mls_statistical.mat").yearly_mls_statistical;
+yearly_mls_statistical = load("yearly_mls_weighted.mat").yearly_mls;
+yearly_mls_statistical = 3 * yearly_mls_statistical / 1e3; % Weight by euros
+
 % disp(yearly_mls_statistical) % Note: units are MWh / year
 
 %% plot network graph with mls heatmap
@@ -79,15 +81,8 @@ p = plot(G, ...
     'LineWidth', line_widths, ...
     'Marker', 'o', ...
     'MarkerSize', 4);
-
-caxis([0, 200]);
-
 colormap(turbo);
-cb = colorbar;
-ticks = cb.Ticks;
-labels = string(ticks);
-labels(end) = "? " + labels(end);  % O puedes usar: labels(end) + "+"
-cb.TickLabels = labels;
+colorbar;
 
 provide_network_design;
 
