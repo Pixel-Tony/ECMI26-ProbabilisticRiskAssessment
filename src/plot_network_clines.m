@@ -29,24 +29,23 @@ t = mpc.branch(:, T_BUS);
 G = graph(f, t);
 [x y] = graph_get_coords(G);
 [G x y] = graph_min_length(G, x, y, 0.5);
-provide_network_design;
 
 fig = figure;
 h = plot(G, ...,
     'XData', x, ...
     'YData', y, ...
-    'NodeColor', 'k', ... % 'Layout', 'force', ...
-    'MarkerSize', 3, ...
-    'EdgeAlpha', 1);
+    'NodeColor', 'k', ...
+    'MarkerSize', 5, ...
+    'EdgeCData', risk, ...
+    'EdgeColor', 'flat', ...,
+    'EdgeAlpha', 0.7);
+
+provide_network_design;
+colormap(jet);
 
 % title('ACTIVSg200 Network — N-1 Critical Lines Highlighted');
 
 % Color edges by N-1 risk
-colormap(jet);
-h.EdgeCData = risk;
-
-colorbar;
-% ylabel(colorbar, 'N-1 Failure Risk');
 
 % Make critical lines thicker
 h.LineWidth = 1.25 * (1 + risk);
